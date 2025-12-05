@@ -163,15 +163,165 @@ def crear_mueble_completo(
         )
 
         db.commit()
+        db.refresh(nuevo_objeto)
+        db.refresh(nuevo_mueble)
+        
+        # Consultar puntos generados para confirmar
+        puntos = db.query(PuntoReposicion).filter(PuntoReposicion.id_mueble == nuevo_mueble.id_mueble).all()
+        
         return {
             "mensaje": "Mueble creado exitosamente",
             "id_objeto": nuevo_objeto.id_objeto,
             "id_mueble": nuevo_mueble.id_mueble,
             "nombre": nuevo_objeto.nombre,
-            "capacidad": f"{nuevo_mueble.filas}x{nuevo_mueble.columnas}"
+            "filas": nuevo_mueble.filas,
+            "columnas": nuevo_mueble.columnas,
+            "capacidad": f"{nuevo_mueble.filas}x{nuevo_mueble.columnas}",
+            "puntos_generados": len(puntos),
+            "puntos": [
+                {"id_punto": p.id_punto, "nivel": p.nivel, "estanteria": p.estanteria} for p in puntos
+            ]
         }
     except HTTPException as he:
         raise he
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al crear mueble: {str(e)}")
+
+@router.get("/muebles/{id_objeto}/info")
+def obtener_info_mueble(
+    id_objeto: int,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """
+    Obtiene información completa de un mueble incluyendo sus puntos de reposición.
+    Útil para verificar el estado de un mueble antes de asignar productos.
+    """
+    try:
+        # Verificar que el objeto existe y es de la empresa del usuario
+        objeto = db.query(ObjetoMapa).filter(
+            ObjetoMapa.id_objeto == id_objeto,
+            ObjetoMapa.id_empresa == current_user.id_empresa
+        ).first()
+        
+        if not objeto:
+            raise HTTPException(status_code=404, detail="Objeto no encontrado")
+        
+        # Verificar que es un mueble
+        tipo = db.query(ObjetoTipo).filter(ObjetoTipo.id_tipo == objeto.id_tipo).first()
+        if not tipo or tipo.nombre_tipo.lower() != 'mueble':
+            raise HTTPException(status_code=422, detail="El objeto no es un mueble")
+        
+        # Buscar el mueble de reposición
+        mueble = db.query(MuebleReposicion).filter(
+            MuebleReposicion.id_objeto == id_objeto
+        ).first()
+        
+        if not mueble:
+            return {
+                "id_objeto": id_objeto,
+                "nombre": objeto.nombre,
+                "tiene_configuracion": False,
+                "mensaje": "Este mueble no tiene configuración de reposición. Use POST /muebles/reposicion para configurarlo."
+            }
+        
+        # Contar puntos existentes
+        puntos = db.query(PuntoReposicion).filter(
+            PuntoReposicion.id_mueble == mueble.id_mueble
+        ).all()
+        
+        puntos_con_producto = [p for p in puntos if p.id_producto is not None]
+        
+        return {
+            "id_objeto": id_objeto,
+            "id_mueble": mueble.id_mueble,
+            "nombre": objeto.nombre,
+            "tiene_configuracion": True,
+            "filas": mueble.filas,
+            "columnas": mueble.columnas,
+            "capacidad_total": mueble.filas * mueble.columnas,
+            "puntos_generados": len(puntos),
+            "puntos_con_producto": len(puntos_con_producto),
+            "puntos_vacios": len(puntos) - len(puntos_con_producto),
+            "tiene_puntos": len(puntos) > 0
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al obtener información del mueble: {str(e)}")
+
+@router.post("/muebles/{id_objeto}/validar-y-regenerar-puntos", status_code=200)
+def validar_y_regenerar_puntos(
+    id_objeto: int,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """
+    Valida que un mueble tenga puntos de reposición y los regenera si no existen.
+    Este endpoint es útil para arreglar muebles creados antes de implementar la generación automática.
+    """
+    try:
+        # Verificar que el objeto existe y es de la empresa del usuario
+        objeto = db.query(ObjetoMapa).filter(
+            ObjetoMapa.id_objeto == id_objeto,
+            ObjetoMapa.id_empresa == current_user.id_empresa
+        ).first()
+        
+        if not objeto:
+            raise HTTPException(status_code=404, detail="Objeto no encontrado")
+        
+        # Verificar que es un mueble
+        tipo = db.query(ObjetoTipo).filter(ObjetoTipo.id_tipo == objeto.id_tipo).first()
+        if not tipo or tipo.nombre_tipo.lower() != 'mueble':
+            raise HTTPException(status_code=422, detail="El objeto no es un mueble")
+        
+        # Buscar el mueble de reposición
+        mueble = db.query(MuebleReposicion).filter(
+            MuebleReposicion.id_objeto == id_objeto
+        ).first()
+        
+        if not mueble:
+            raise HTTPException(
+                status_code=404, 
+                detail="Este mueble no tiene configuración de reposición. Debe ser creado usando el endpoint /muebles/completo"
+            )
+        
+        # Contar puntos existentes
+        puntos_existentes = db.query(PuntoReposicion).filter(
+            PuntoReposicion.id_mueble == mueble.id_mueble
+        ).count()
+        
+        if puntos_existentes > 0:
+            return {
+                "mensaje": "El mueble ya tiene puntos de reposición",
+                "accion": "ninguna",
+                "puntos_existentes": puntos_existentes,
+                "capacidad": f"{mueble.filas}x{mueble.columnas}"
+            }
+        
+        # Generar puntos
+        punto_reposicion_repository.generar_puntos_mueble(
+            db,
+            mueble.id_mueble,
+            mueble.filas,
+            mueble.columnas,
+            current_user.id_empresa
+        )
+        
+        db.commit()
+        
+        puntos_generados = mueble.filas * mueble.columnas
+        
+        return {
+            "mensaje": "Puntos de reposición generados exitosamente",
+            "accion": "regenerados",
+            "puntos_generados": puntos_generados,
+            "nombre": objeto.nombre,
+            "capacidad": f"{mueble.filas}x{mueble.columnas}"
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al validar/regenerar puntos: {str(e)}")

@@ -35,6 +35,7 @@ class MapaOut(BaseModel):
     nombre: str
     ancho: int
     alto: int
+    activo: bool = False
 
 class MapeoReposicionResponse(BaseModel):
     mapa: Optional[MapaOut] = None

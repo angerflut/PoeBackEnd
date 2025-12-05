@@ -36,7 +36,8 @@ origins = [
     "http://localhost:5173",  # Para Vite
     "http://127.0.0.1:5173",
     "http://localhost:8081",
-    "http://localhost:8080",  # Para FastAPI en desarrollo
+    "http://localhost:8080",
+    "http://localhost:8082"   # Para FastAPI en desarrollo
 ]
 
 app.add_middleware(

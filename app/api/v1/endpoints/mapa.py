@@ -38,15 +38,18 @@ router = APIRouter()
 # Listar todos los mapas de mi empresa
 @router.get("/todos", response_model=List[MapaOut])
 def listar_mis_mapas(
+    incluir_inactivos: bool = Query(True, description="Si es True, incluye mapas activos e inactivos. Si es False, solo activos."),
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user)
 ):
-    """Lista solo los mapas ACTIVOS de la empresa del usuario."""
-    mapas = db.query(Mapa).filter(
-        Mapa.id_empresa == current_user.id_empresa,
-        Mapa.activo == True
-    ).all()
-    return [MapaOut(id=m.id_mapa, nombre=m.nombre, ancho=m.ancho, alto=m.alto) for m in mapas]
+    """Lista los mapas de la empresa del usuario. Por defecto incluye todos (activos e inactivos)."""
+    query = db.query(Mapa).filter(Mapa.id_empresa == current_user.id_empresa)
+
+    if not incluir_inactivos:
+        query = query.filter(Mapa.activo == True)
+
+    mapas = query.all()
+    return [MapaOut(id=m.id_mapa, nombre=m.nombre, ancho=m.ancho, alto=m.alto, activo=m.activo) for m in mapas]
 
 # Activar un mapa propio y desactivar los demás
 @router.put("/{id_mapa}/activar", response_model=MapaOut)
@@ -105,7 +108,6 @@ def visualizar_mapa_reposicion(
     if not ubicaciones_db:
         return {"mensaje": "No hay ubicaciones cargadas.", "mapa": MapaOut(id=mapa.id_mapa, nombre=mapa.nombre, ancho=mapa.ancho, alto=mapa.alto), "ubicaciones": []}
     ubicaciones = []
-    puntos_reposicion_existen = False
     for ubic in ubicaciones_db:
         objeto = db.query(ObjetoMapa).filter(ObjetoMapa.id_objeto == ubic.id_objeto).first() if ubic.id_objeto else None
         objeto_out = None
@@ -117,8 +119,10 @@ def visualizar_mapa_reposicion(
                 tipo=tipo.nombre_tipo if tipo else "",
                 caminable=tipo.caminable if tipo else None
             )
+            # Buscar configuración de mueble si existe
             mueble = db.query(MuebleReposicion).filter(MuebleReposicion.id_objeto == objeto.id_objeto).first()
             if mueble:
+                # Obtener puntos de reposición del mueble
                 puntos_db = db.query(PuntoReposicion).filter(PuntoReposicion.id_mueble == mueble.id_mueble).all()
                 puntos_out = []
                 for punto in puntos_db:
@@ -138,8 +142,7 @@ def visualizar_mapa_reposicion(
                         estanteria=punto.estanteria,
                         producto=producto_out
                     ))
-                if puntos_out:
-                    puntos_reposicion_existen = True
+                # Crear objeto mueble con los puntos (puede estar vacío si no hay puntos)
                 mueble_out = MuebleOut(
                     filas=mueble.filas,
                     columnas=mueble.columnas,
@@ -151,8 +154,7 @@ def visualizar_mapa_reposicion(
             objeto=objeto_out,
             mueble=mueble_out
         ))
-    if not puntos_reposicion_existen:
-        return {"mensaje": "No hay puntos de reposición registrados.", "mapa": MapaOut(id=mapa.id_mapa, nombre=mapa.nombre, ancho=mapa.ancho, alto=mapa.alto), "ubicaciones": []}
+    # Devolver el mapa con todas las ubicaciones, incluso si algunos muebles no tienen puntos
     return {
         "mapa": MapaOut(id=mapa.id_mapa, nombre=mapa.nombre, ancho=mapa.ancho, alto=mapa.alto),
         "ubicaciones": ubicaciones
